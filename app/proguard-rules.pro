@@ -1,0 +1,5 @@
+-keep class com.futtv.app.data.model.** { *; }
+-keep class org.jsoup.** { *; }
+-dontwarn org.jsoup.**
+-keepattributes *Annotation*
+-keepattributes SourceFile,LineNumberTable

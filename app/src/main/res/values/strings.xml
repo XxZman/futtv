@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FutTV</string>
+    <string name="title_eventos">Eventos de Hoy</string>
+    <string name="title_canales">Canales en Vivo</string>
+    <string name="label_en_vivo">EN VIVO</string>
+    <string name="label_seleccionar_servidor">Seleccionar Servidor</string>
+    <string name="label_cancelar">Cancelar</string>
+    <string name="label_actualizar">Actualizar</string>
+    <string name="error_no_eventos">No hay eventos disponibles hoy</string>
+    <string name="error_cargando_canales">Error cargando canales</string>
+</resources>
