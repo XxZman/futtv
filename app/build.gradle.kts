@@ -17,9 +17,19 @@ android {
         versionName = "1.1"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("../futtv-release.keystore")
+            storePassword = "futtv2024"
+            keyAlias = "futtv"
+            keyPassword = "futtv2024"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
