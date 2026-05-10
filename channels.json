@@ -1,0 +1,20 @@
+{
+  "hdx_domain": "streamhdx.com",
+  "channels": [
+    { "id": "tyc-sports",      "key": "tycsports"   },
+    { "id": "tv-publica",      "key": "tvpublica"   },
+    { "id": "deportv",         "key": "deportv"     },
+    { "id": "espn-1",          "key": "espn"        },
+    { "id": "espn-premium",    "key": "espnpremium" },
+    { "id": "disney-plus",     "key": "disney"      },
+    { "id": "fox-sports",      "key": "foxsports"   },
+    { "id": "tnt-sports",      "key": "tntsports"   },
+    { "id": "directv-sports",  "key": "dsports"     },
+    { "id": "dsports2",        "key": "dsports2"    },
+    { "id": "fanatiz",         "key": "fanatiz"     },
+    { "id": "conmebol-tv",     "key": "conmebol"    },
+    { "id": "win-sports",      "key": "winsports"   },
+    { "id": "goltv",           "key": "goltv"       },
+    { "id": "tudn",            "key": "tudn"        }
+  ]
+}

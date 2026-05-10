@@ -52,168 +52,131 @@ sealed class UiState<out T> {
 
 object ChannelRegistry {
 
+    // Genera los 3 reproductores de streamhdx para un canal.
+    // El WebView carga esta página, Clappr pide el .m3u8 via XHR,
+    // shouldInterceptRequest lo captura y se lo pasa a ExoPlayer.
+    private fun evtsServers(stream: String): List<StreamServer> = listOf(
+        StreamServer("Reproductor 1", "https://streamhdx.com/live1.php?stream=$stream", 0),
+        StreamServer("Reproductor 2", "https://streamhdx.com/live2.php?stream=$stream", 1),
+        StreamServer("Reproductor 3", "https://streamhdx.com/live3.php?stream=$stream", 2),
+    )
+
     val channels = listOf(
         // ── Argentina ────────────────────────────────────────────────────────
         Channel(
             id = "tyc-sports", name = "TyC Sports", slug = "tyc-sports",
             colorHex = 0xFF0D47A1,
             logoUrl = "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/argentina/tyc-sports-ar.png",
-            sourceUrl = "https://pelotalibretv.su/tyc-sports/",
-            servers = listOf(
-                StreamServer("Servidor 1", "https://latamvidz1.com/canal.php?stream=tycsports", 0),
-                StreamServer("Servidor 2", "https://la14hd.com/vivo/canales.php?stream=tycsports", 1),
-                StreamServer("Servidor 3", "https://elcanaldeportivo.com/tycsports-sd.php", 2)
-            )
+            sourceUrl = "https://pelotalibrestv.org/",
+            servers = evtsServers("tycsports")
         ),
         Channel(
             id = "tv-publica", name = "TV Pública", slug = "tv-publica",
             colorHex = 0xFF006064,
             logoUrl = "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/argentina/television-publica-ar.png",
-            sourceUrl = "https://pelotalibretv.su/tv-publica/",
-            servers = listOf(
-                StreamServer("Servidor 1", "https://latamvidz1.com/canal.php?stream=tv_publica", 0)
-            )
+            sourceUrl = "https://pelotalibrestv.org/",
+            servers = evtsServers("tvpublica")
         ),
         Channel(
             id = "deportv", name = "DeporTV", slug = "deportv",
             colorHex = 0xFF37474F,
             logoUrl = "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/argentina/deportv-ar.png",
-            sourceUrl = "https://pelotalibretv.su/deportv/",
-            servers = fallbackServers("deportv")
+            sourceUrl = "https://pelotalibrestv.org/",
+            servers = evtsServers("deportv")
         ),
         // ── ESPN / Disney ─────────────────────────────────────────────────────
         Channel(
             id = "espn-1", name = "ESPN", slug = "espn-1",
             colorHex = 0xFFE65100,
             logoUrl = "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/argentina/espn-ar.png",
-            sourceUrl = "https://pelotalibretv.su/espn-1/",
-            servers = listOf(
-                StreamServer("Servidor 1", "https://latamvidz1.com/canal.php?stream=espn", 0),
-                StreamServer("Servidor 2", "https://la14hd.com/vivo/canal.php?stream=espn", 1),
-                StreamServer("Servidor 3", "https://elcanaldeportivo.com/espnhd.php", 2)
-            )
+            sourceUrl = "https://pelotalibrestv.org/en-vivo/espn1-online",
+            servers = evtsServers("espn")
         ),
         Channel(
             id = "espn-premium", name = "ESPN Premium", slug = "espn-premium",
             colorHex = 0xFFBF360C,
             logoUrl = "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/argentina/espn-premium-ar.png",
-            sourceUrl = "https://pelotalibretv.su/espn-premium/",
-            servers = listOf(
-                StreamServer("Servidor 1", "https://latamvidz1.com/canal.php?stream=espnpremium", 0),
-                StreamServer("Servidor 2", "https://la14hd.com/vivo/canal.php?stream=espnpremium", 1),
-                StreamServer("Servidor 3", "https://elcanaldeportivo.com/espnpremium.php", 2)
-            )
+            sourceUrl = "https://pelotalibrestv.org/en-vivo/espn-premium-online/",
+            servers = evtsServers("espnpremium")
         ),
         Channel(
             id = "disney-plus", name = "Disney+", slug = "disney-plus",
             colorHex = 0xFF1A237E,
             logoUrl = "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/international/disney-plus-int.png",
-            sourceUrl = "https://pelotalibretv.su/star-plus/",
-            servers = listOf(
-                StreamServer("Servidor 1", "https://latamvidz1.com/canal.php?stream=disney3", 0),
-                StreamServer("Servidor 2", "https://latamvidz1.com/canal.php?stream=disney1", 1),
-                StreamServer("Servidor 3", "https://latamvidz1.com/canal.php?stream=disney2", 2)
-            )
+            sourceUrl = "https://pelotalibrestv.org/",
+            servers = evtsServers("disney")
         ),
         // ── Fox Sports ────────────────────────────────────────────────────────
         Channel(
             id = "fox-sports", name = "Fox Sports", slug = "fox-sports",
             colorHex = 0xFF4A148C,
             logoUrl = "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/argentina/fox-sports-ar.png",
-            sourceUrl = "https://pelotalibretv.su/fox-sports/",
-            servers = listOf(
-                StreamServer("Servidor 1", "https://latamvidz1.com/canal.php?stream=foxsports", 0)
-            )
+            sourceUrl = "https://pelotalibrestv.org/en-vivo/fox-sports-online/",
+            servers = evtsServers("foxsports")
         ),
         // ── TNT / Warner ──────────────────────────────────────────────────────
         Channel(
             id = "tnt-sports", name = "TNT Sports", slug = "tnt-sports",
             colorHex = 0xFFB71C1C,
             logoUrl = "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/argentina/tnt-sports-ar.png",
-            sourceUrl = "https://pelotalibretv.su/tnt-sports/",
-            servers = listOf(
-                StreamServer("Servidor 1", "https://latamvidz1.com/canal.php?stream=tntsports", 0),
-                StreamServer("Servidor 2", "https://la14hd.com/vivo/canal.php?stream=tntsports", 1),
-                StreamServer("Servidor 3", "https://elcanaldeportivo.com/tntsports.php", 2)
-            )
+            sourceUrl = "https://pelotalibrestv.org/en-vivo/tnt-sports-online",
+            servers = evtsServers("tntsports")
         ),
         // ── DirecTV / DSports ─────────────────────────────────────────────────
         Channel(
             id = "directv-sports", name = "DirecTV Sports", slug = "directv-sports",
             colorHex = 0xFF1B5E20,
             logoUrl = "https://upload.wikimedia.org/wikipedia/commons/5/57/DirecTV-Sports.png",
-            sourceUrl = "https://pelotalibretv.su/directv-sports/",
-            servers = listOf(
-                StreamServer("Servidor 1", "https://latamvidz1.com/canal.php?stream=dsports", 0),
-                StreamServer("Servidor 2", "https://la14hd.com/vivo/canal.php?stream=dsports", 1),
-                StreamServer("Servidor 3", "https://elcanaldeportivo.com/directvsports.php", 2)
-            )
+            sourceUrl = "https://pelotalibrestv.org/en-vivo/directv-sports-online",
+            servers = evtsServers("dsports")
         ),
         Channel(
             id = "dsports2", name = "DSports+", slug = "directv-sports-online",
             colorHex = 0xFF1A237E,
             logoUrl = "https://upload.wikimedia.org/wikipedia/commons/5/57/DirecTV-Sports.png",
-            sourceUrl = "https://pelotalibretv.su/directv-sports-online/",
-            servers = fallbackServers("dsports2")
+            sourceUrl = "https://pelotalibrestv.org/",
+            servers = evtsServers("dsports2")
         ),
         // ── Fanatiz ────────────────────────────────────────────────────────────
         Channel(
             id = "fanatiz", name = "Fanatiz", slug = "fanatiz",
             colorHex = 0xFF00897B,
             logoUrl = "https://upload.wikimedia.org/wikipedia/commons/1/1d/Fanatiz_Logo_%282017%E2%80%932020%29.png",
-            sourceUrl = "https://pelotalibretv.su/fanatiz/",
-            servers = emptyList()
+            sourceUrl = "https://pelotalibrestv.org/",
+            servers = evtsServers("fanatiz")
         ),
         // ── Conmebol TV ────────────────────────────────────────────────────────
         Channel(
             id = "conmebol-tv", name = "Conmebol TV", slug = "conmebol-tv",
             colorHex = 0xFF1565C0,
             logoUrl = "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f7/CONMEBOL.svg/320px-CONMEBOL.svg.png",
-            sourceUrl = "https://pelotalibretv.su/conmebol-tv/",
-            servers = emptyList()
+            sourceUrl = "https://pelotalibrestv.org/",
+            servers = evtsServers("conmebol")
         ),
         // ── WIN Sports (Colombia) ──────────────────────────────────────────────
         Channel(
             id = "win-sports", name = "WIN Sports", slug = "win-sports",
             colorHex = 0xFFE53935,
             logoUrl = "https://upload.wikimedia.org/wikipedia/commons/thumb/3/39/Win_Sports_nuevo_logo.svg/320px-Win_Sports_nuevo_logo.svg.png",
-            sourceUrl = "https://pelotalibretv.su/win-sports/",
-            servers = listOf(
-                StreamServer("Servidor 1", "https://la14hd.com/vivo/canales.php?stream=winsports", 0),
-                StreamServer("Servidor 2", "https://streamtp10.com/global1.php?stream=winsports", 1),
-                StreamServer("Servidor 3", "https://streamtp10.com/global1.php?stream=winplus", 2),
-                StreamServer("Servidor 4", "https://streamtp10.com/global2.php?stream=winsports", 3)
-            )
+            sourceUrl = "https://pelotalibrestv.org/",
+            servers = evtsServers("winsports")
         ),
         // ── GolTV ──────────────────────────────────────────────────────────────
         Channel(
             id = "goltv", name = "GolTV", slug = "goltv",
             colorHex = 0xFF558B2F,
             logoUrl = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a3/GolTV_logo.svg/320px-GolTV_logo.svg.png",
-            sourceUrl = "https://pelotalibretv.su/goltv/",
-            servers = emptyList()
+            sourceUrl = "https://pelotalibrestv.org/",
+            servers = evtsServers("goltv")
         ),
         // ── TUDN ──────────────────────────────────────────────────────────────
         Channel(
             id = "tudn", name = "TUDN", slug = "tudn",
             colorHex = 0xFF880E4F,
             logoUrl = "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6c/TUDN_Logo.svg/320px-TUDN_Logo.svg.png",
-            sourceUrl = "https://pelotalibretv.su/tudn/",
-            servers = listOf(
-                StreamServer("Servidor 1", "https://latamvidz1.com/canal.php?stream=tudn_usa", 0)
-            )
+            sourceUrl = "https://pelotalibrestv.org/",
+            servers = evtsServers("tudn")
         )
-    )
-
-    /**
-     * Servidores de respaldo por canal.
-     * la14hd va primero. streamtp10 = global1 (manual) y global2 (automático).
-     */
-    private fun fallbackServers(key: String): List<StreamServer> = listOf(
-        StreamServer("Servidor 1", "https://la14hd.com/vivo/canales.php?stream=$key", 0),
-        StreamServer("Servidor 2", "https://streamtp10.com/global1.php?stream=$key", 1),
-        StreamServer("Servidor 3", "https://streamtp10.com/global2.php?stream=$key", 2),
-        StreamServer("Servidor 4", "https://elcanaldeportivo.com/${key}.php", 3)
     )
 
     val leagueToChannels = mapOf(

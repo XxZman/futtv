@@ -6,6 +6,7 @@ import com.futtv.app.data.model.Channel
 import com.futtv.app.data.model.ChannelRegistry
 import com.futtv.app.data.model.SportEvent
 import com.futtv.app.data.scraper.AgendaScraper
+import com.futtv.app.data.scraper.ChannelConfigFetcher
 import com.futtv.app.data.scraper.PelotaLibreScraper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -13,7 +14,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 
-class SportsRepository(httpClient: OkHttpClient) {
+class SportsRepository(private val httpClient: OkHttpClient) {
 
     companion object {
         private const val TAG = "SportsRepository"
@@ -37,17 +38,12 @@ class SportsRepository(httpClient: OkHttpClient) {
         }
 
         return withContext(Dispatchers.IO) {
-            try {
-                val channels = scraper.scrapeChannels()
-                cachedChannels = channels
-                cacheTimestamp = System.currentTimeMillis()
-                Log.d(TAG, "Refreshed ${channels.size} channels")
-                channels
-            } catch (e: Exception) {
-                Log.e(TAG, "Error loading channels: ${e.message}")
-                if (cachedChannels.isNotEmpty()) cachedChannels
-                else throw e
-            }
+            // Intenta obtener keys actualizados desde GitHub; fallback al ChannelRegistry hardcodeado
+            val channels = ChannelConfigFetcher.fetch(httpClient) ?: ChannelRegistry.channels
+            cachedChannels = channels
+            cacheTimestamp = System.currentTimeMillis()
+            Log.d(TAG, "Channels ready: ${channels.size}")
+            channels
         }
     }
 

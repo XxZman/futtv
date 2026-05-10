@@ -1,6 +1,6 @@
 {
-  "versionCode": 1,
-  "versionName": "1.0",
-  "apkUrl": "https://github.com/XxZman/futtv/releases/download/v1.0/futtv.apk",
-  "changelog": "Versión inicial de FutTV"
+  "versionCode": 2,
+  "versionName": "1.1",
+  "apkUrl": "https://github.com/XxZman/futtv/releases/download/v1.1/FutTV.apk",
+  "changelog": "Selección de servidor corregida, audio doble eliminado, detección de congelamiento"
 }

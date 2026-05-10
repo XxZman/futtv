@@ -20,7 +20,10 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 
 class PlayerActivity : AppCompatActivity() {
@@ -73,15 +76,27 @@ class PlayerActivity : AppCompatActivity() {
     private var currentIndex = 0
     private var isOverlayVisible = false
     private val hideOverlayRunnable = Runnable { hideOverlay() }
+    // Índice del botón con foco en el overlay: 0..serverLabels.size-1 = servidores, size = Salir
+    private var overlayFocusIndex = 0
 
     // WebView stream detection
     private var videoStarted = false
+    @Volatile private var webViewCurrentUrl = ""
+    // Evita auto-saltar de servidor si ExoPlayer ya estaba reproduciendo bien
+    private var exoWasPlaying = false
     private val webViewTimeoutRunnable = Runnable {
         if (!videoStarted) {
             runOnUiThread { tryNextServerAuto() }
         }
     }
     private val WEBVIEW_TIMEOUT_MS = 20_000L
+
+    // Watchdog: si ExoPlayer lleva demasiado tiempo en STATE_BUFFERING después de haber
+    // reproducido bien, el stream se cortó → intentar siguiente servidor
+    private val STALL_TIMEOUT_MS = 15_000L
+    private val stallWatchdogRunnable = Runnable {
+        tryNextServerAuto()
+    }
 
     // ─── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -130,6 +145,7 @@ class PlayerActivity : AppCompatActivity() {
         super.onDestroy()
         overlayLayout?.removeCallbacks(hideOverlayRunnable)
         rootLayout?.removeCallbacks(webViewTimeoutRunnable)
+        rootLayout?.removeCallbacks(stallWatchdogRunnable)
         exoPlayer?.release(); exoPlayer = null
         // FIX: remove WebView from parent BEFORE destroy to avoid "still attached" warning
         webView?.let { wv ->
@@ -193,7 +209,9 @@ class PlayerActivity : AppCompatActivity() {
                     if (url.contains(".m3u8", ignoreCase = true) ||
                         url.contains(".mpd", ignoreCase = true) ||
                         url.endsWith(".ts", ignoreCase = true)) {
-                        playWithExoPlayer(url)
+                        val referer = view.url
+                        val headers = if (!referer.isNullOrBlank()) mapOf("Referer" to referer) else emptyMap()
+                        playWithExoPlayer(url, headers)
                         return true
                     }
                     // Para redirects internos del main frame: resetear timeout para que
@@ -209,6 +227,8 @@ class PlayerActivity : AppCompatActivity() {
 
                 override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                     super.onPageStarted(view, url, favicon)
+                    if (url == "about:blank") return
+                    webViewCurrentUrl = url
                     android.util.Log.d("FutTV_Player", "WebView loading: $url")
                     showLoading(true)
                     hideError()
@@ -216,11 +236,16 @@ class PlayerActivity : AppCompatActivity() {
 
                 override fun onPageFinished(view: WebView, url: String) {
                     super.onPageFinished(view, url)
+                    // about:blank se carga intencionalmente para matar audio de Clappr
+                    if (url == "about:blank") return
                     showLoading(false)
                     injectAutoplay(view, 0)
                     injectAutoplay(view, 800)
                     injectAutoplay(view, 2000)
                     injectAutoplay(view, 4000)
+                    injectStreamUrlScan(view, 0)
+                    injectStreamUrlScan(view, 1500)
+                    injectStreamUrlScan(view, 3500)
                 }
 
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -242,6 +267,41 @@ class PlayerActivity : AppCompatActivity() {
                 override fun onPageCommitVisible(view: WebView, url: String) {
                     android.util.Log.d("FutTV_Player", "PageCommitVisible: $url")
                 }
+
+                // Intercepta TODOS los requests del WebView (incluidos XHR/fetch de Clappr).
+                // Cuando Clappr pide el .m3u8 del stream, lo capturamos y se lo pasamos a
+                // ExoPlayer en lugar de dejarlo reproducir dentro del WebView.
+                override fun shouldInterceptRequest(
+                    view: WebView,
+                    request: android.webkit.WebResourceRequest
+                ): android.webkit.WebResourceResponse? {
+                    val url = request.url.toString()
+                    if (!videoStarted &&
+                        (url.contains(".m3u8", ignoreCase = true) ||
+                         url.contains(".mpd",  ignoreCase = true))) {
+
+                        android.util.Log.d("FutTV_Player", "Intercepted stream URL: $url")
+                        videoStarted = true   // volatile: evita doble intercepción desde bg thread
+
+                        val referer = webViewCurrentUrl
+                        val headers = buildMap<String, String> {
+                            if (referer.isNotBlank()) put("Referer", referer)
+                            request.url.host?.let { put("Origin", "https://$it") }
+                        }
+                        // removeCallbacks DEBE ejecutarse en el main thread
+                        runOnUiThread {
+                            rootLayout?.removeCallbacks(webViewTimeoutRunnable)
+                            playWithExoPlayer(url, headers)
+                        }
+
+                        // Devuelve respuesta vacía para que Clappr no intente reproducir también
+                        return android.webkit.WebResourceResponse(
+                            "application/x-mpegURL", "utf-8",
+                            java.io.ByteArrayInputStream(ByteArray(0))
+                        )
+                    }
+                    return super.shouldInterceptRequest(view, request)
+                }
             }
 
             // Bridge para detectar si el video realmente arrancó
@@ -253,6 +313,21 @@ class PlayerActivity : AppCompatActivity() {
                     runOnUiThread { showLoading(false) }
                 }
             }, "FutTVPlayer")
+
+            // Bridge para capturar URL de stream desde inputs ocultos de la página
+            addJavascriptInterface(object {
+                @android.webkit.JavascriptInterface
+                fun onStreamUrlFound(url: String) {
+                    if (url.isBlank() || videoStarted) return
+                    android.util.Log.d("FutTV_Player", "Stream URL found in input: $url")
+                    val referer = webView?.url ?: ""
+                    val headers = buildMap {
+                        if (referer.isNotBlank()) put("Referer", referer)
+                        put("Origin", "https://streamhdx.com")
+                    }
+                    runOnUiThread { playWithExoPlayer(url, headers) }
+                }
+            }, "Android")
 
             webChromeClient = object : WebChromeClient() {
                 private var customView: View? = null
@@ -408,6 +483,27 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    // Escanea inputs ocultos buscando URL de stream y la reporta via la interfaz "Android"
+    private fun injectStreamUrlScan(view: WebView, delayMs: Long) {
+        val js = """
+            (function() {
+                var inputs = document.querySelectorAll('input');
+                for (var i = 0; i < inputs.length; i++) {
+                    var val = inputs[i].value;
+                    if (val && (val.includes('.m3u8') || val.includes('stream') || val.includes('.php?stream'))) {
+                        try { Android.onStreamUrlFound(val); } catch(e) {}
+                        break;
+                    }
+                }
+            })();
+        """.trimIndent()
+        if (delayMs == 0L) {
+            view.evaluateJavascript(js, null)
+        } else {
+            view.postDelayed({ view.evaluateJavascript(js, null) }, delayMs)
+        }
+    }
+
     private fun buildErrorLayout(): LinearLayout {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -475,12 +571,15 @@ class PlayerActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             visibility  = View.GONE
             isFocusable = false
+            isFocusableInTouchMode = false
+            descendantFocusability = LinearLayout.FOCUS_BLOCK_DESCENDANTS
             setBackgroundColor(Color.TRANSPARENT)
         }
 
         // ── Barra superior ────────────────────────────────────────────────────
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            isFocusable = false
             setBackgroundColor(Color.parseColor("#E6000000"))
             setPadding(dp(40), dp(18), dp(40), dp(18))
             gravity = android.view.Gravity.CENTER_VERTICAL
@@ -507,6 +606,9 @@ class PlayerActivity : AppCompatActivity() {
         // ── Barra inferior con botones de servidor ────────────────────────────
         val bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            isFocusable = false
+            isFocusableInTouchMode = false
+            descendantFocusability = LinearLayout.FOCUS_BLOCK_DESCENDANTS
             setBackgroundColor(Color.parseColor("#E6000000"))
             setPadding(dp(40), dp(16), dp(40), dp(16))
             gravity = android.view.Gravity.CENTER_VERTICAL
@@ -518,6 +620,7 @@ class PlayerActivity : AppCompatActivity() {
             textSize = 13f
             letterSpacing = 0.10f
             setPadding(0, 0, dp(20), 0)
+            isFocusable = false
         }
         bottomBar.addView(tvLabel)
 
@@ -525,17 +628,13 @@ class PlayerActivity : AppCompatActivity() {
             val btn = TextView(this).apply {
                 text = label
                 textSize = 16f
-                isFocusable = true
-                isFocusableInTouchMode = true
+                isFocusable = false          // Navegación 100% manual vía onKeyDown
+                isFocusableInTouchMode = false
                 setPadding(dp(22), dp(12), dp(22), dp(12))
                 setTypeface(null, Typeface.BOLD)
                 updateServerButtonStyle(this, index == currentIndex, false)
                 tag = "server_btn_$index"
                 setOnClickListener { switchServer(index) }
-                setOnFocusChangeListener { v, hasFocus ->
-                    updateServerButtonStyle(v as TextView, index == currentIndex, hasFocus)
-                    if (hasFocus) scheduleHide()
-                }
             }
             val lp = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -550,25 +649,78 @@ class PlayerActivity : AppCompatActivity() {
             text = "✕  SALIR"
             setTextColor(Color.parseColor("#EF9A9A"))
             textSize = 14f
-            isFocusable = true
-            isFocusableInTouchMode = true
+            isFocusable = false
+            isFocusableInTouchMode = false
             setPadding(dp(20), dp(12), dp(8), dp(12))
+            tag = "exit_btn"
             setOnClickListener { finish() }
-            setOnFocusChangeListener { _, hasFocus ->
-                setTextColor(if (hasFocus) Color.WHITE else Color.parseColor("#EF9A9A"))
-                if (hasFocus) scheduleHide()
-            }
         }
         bottomBar.addView(btnExit)
         overlay.addView(bottomBar, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         return overlay
     }
 
+    /**
+     * Mueve el cursor del overlay al índice dado.
+     * 0..serverLabels.size-1 = botones de servidor; serverLabels.size = botón Salir.
+     * No usa el sistema de foco de Android — actualiza los estilos directamente.
+     */
+    private fun moveOverlayFocus(index: Int) {
+        overlayFocusIndex = index.coerceIn(0, serverLabels.size)
+
+        // Actualizar estilo de cada botón de servidor
+        serverLabels.forEachIndexed { i, _ ->
+            overlayLayout?.findViewWithTag<TextView>("server_btn_$i")?.let {
+                updateServerButtonStyle(it, i == currentIndex, i == overlayFocusIndex)
+            }
+        }
+
+        // Actualizar botón Salir
+        overlayLayout?.findViewWithTag<TextView>("exit_btn")?.let { exitBtn ->
+            if (overlayFocusIndex == serverLabels.size) {
+                exitBtn.setBackgroundColor(Color.parseColor("#FFD600"))
+                exitBtn.setTextColor(Color.BLACK)
+                exitBtn.setTypeface(null, Typeface.BOLD)
+                exitBtn.scaleX = 1.10f; exitBtn.scaleY = 1.10f
+            } else {
+                exitBtn.setBackgroundColor(Color.TRANSPARENT)
+                exitBtn.setTextColor(Color.parseColor("#EF9A9A"))
+                exitBtn.setTypeface(null, Typeface.NORMAL)
+                exitBtn.scaleX = 1.0f; exitBtn.scaleY = 1.0f
+            }
+        }
+
+        scheduleHide()
+    }
+
     private fun updateServerButtonStyle(btn: TextView, isActive: Boolean, hasFocus: Boolean) {
         when {
-            isActive -> { btn.setBackgroundColor(Color.parseColor("#C62828")); btn.setTextColor(Color.WHITE) }
-            hasFocus -> { btn.setBackgroundColor(Color.parseColor("#1565C0")); btn.setTextColor(Color.WHITE) }
-            else     -> { btn.setBackgroundColor(Color.parseColor("#1E2D45")); btn.setTextColor(Color.parseColor("#B0BEC5")) }
+            isActive && hasFocus -> {
+                // Activo + seleccionado: blanco con texto rojo — máximo contraste
+                btn.setBackgroundColor(Color.WHITE)
+                btn.setTextColor(Color.parseColor("#C62828"))
+                btn.setTypeface(null, android.graphics.Typeface.BOLD)
+                btn.scaleX = 1.10f; btn.scaleY = 1.10f
+            }
+            isActive -> {
+                btn.setBackgroundColor(Color.parseColor("#C62828"))
+                btn.setTextColor(Color.WHITE)
+                btn.setTypeface(null, android.graphics.Typeface.BOLD)
+                btn.scaleX = 1.0f; btn.scaleY = 1.0f
+            }
+            hasFocus -> {
+                // Foco sin ser activo: amarillo para máxima visibilidad sobre el video
+                btn.setBackgroundColor(Color.parseColor("#FFD600"))
+                btn.setTextColor(Color.parseColor("#000000"))
+                btn.setTypeface(null, android.graphics.Typeface.BOLD)
+                btn.scaleX = 1.10f; btn.scaleY = 1.10f
+            }
+            else -> {
+                btn.setBackgroundColor(Color.parseColor("#1E2D45"))
+                btn.setTextColor(Color.parseColor("#B0BEC5"))
+                btn.setTypeface(null, android.graphics.Typeface.NORMAL)
+                btn.scaleX = 1.0f; btn.scaleY = 1.0f
+            }
         }
     }
 
@@ -612,14 +764,42 @@ class PlayerActivity : AppCompatActivity() {
         url.contains(".mpd", ignoreCase = true) ||
         url.endsWith(".ts", ignoreCase = true)
 
-    private fun playWithExoPlayer(url: String) {
+    private fun playWithExoPlayer(url: String, headers: Map<String, String> = emptyMap()) {
         rootLayout?.removeCallbacks(webViewTimeoutRunnable)
+        rootLayout?.removeCallbacks(stallWatchdogRunnable)
+        // Navegar a about:blank para que Clappr detenga completamente su audio.
+        // webView?.onPause() solo suspende timers pero no garantiza silenciar el stream.
+        webView?.stopLoading()
+        webView?.loadUrl("about:blank")
+        webView?.onPause()
         webView?.visibility = View.GONE
         exoPlayerView?.visibility = View.VISIBLE
+        exoWasPlaying = false
         showLoading(true)
 
         exoPlayer?.release()
-        exoPlayer = ExoPlayer.Builder(this).build().also { player ->
+
+        // Buffer generoso para streams HLS en vivo: prebuffer rápido, aguanta picos de red
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs             */ 15_000,
+                /* maxBufferMs             */ 60_000,
+                /* bufferForPlaybackMs     */  2_000,
+                /* bufferForPlaybackAfterRebufferMs */ 5_000
+            )
+            .build()
+
+        val playerBuilder = if (headers.isNotEmpty()) {
+            val dataSourceFactory = DefaultHttpDataSource.Factory()
+                .setDefaultRequestProperties(headers)
+            ExoPlayer.Builder(this)
+                .setLoadControl(loadControl)
+                .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+        } else {
+            ExoPlayer.Builder(this)
+                .setLoadControl(loadControl)
+        }
+        exoPlayer = playerBuilder.build().also { player ->
             exoPlayerView?.player = player
             player.setMediaItem(MediaItem.fromUri(url))
             player.prepare()
@@ -630,10 +810,34 @@ class PlayerActivity : AppCompatActivity() {
             player.playWhenReady = true
             player.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(state: Int) {
-                    if (state == Player.STATE_READY) showLoading(false)
+                    when (state) {
+                        Player.STATE_READY -> {
+                            exoWasPlaying = true
+                            showLoading(false)
+                            hideStatus()
+                            // Stream recuperado: cancelar watchdog
+                            rootLayout?.removeCallbacks(stallWatchdogRunnable)
+                        }
+                        Player.STATE_BUFFERING -> {
+                            showLoading(true)
+                            if (exoWasPlaying) {
+                                // Stream se congeló durante la reproducción — iniciar watchdog.
+                                // Si no se recupera en STALL_TIMEOUT_MS, cambia de servidor.
+                                rootLayout?.removeCallbacks(stallWatchdogRunnable)
+                                rootLayout?.postDelayed(stallWatchdogRunnable, STALL_TIMEOUT_MS)
+                            }
+                        }
+                        Player.STATE_ENDED -> {
+                            rootLayout?.removeCallbacks(stallWatchdogRunnable)
+                            showLoading(false)
+                        }
+                        else -> {}
+                    }
                 }
                 override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                     showLoading(false)
+                    rootLayout?.removeCallbacks(stallWatchdogRunnable)
+                    // Siempre cambiar de servidor en error: si estaba reproduciendo era un corte real
                     runOnUiThread { tryNextServerAuto() }
                 }
             })
@@ -643,6 +847,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun playWithWebView(url: String) {
         exoPlayer?.release(); exoPlayer = null
         exoPlayerView?.visibility = View.GONE
+        webView?.onResume()
         webView?.visibility = View.VISIBLE
 
         // Reset detection state and start timeout
@@ -700,24 +905,15 @@ class PlayerActivity : AppCompatActivity() {
     // ─── Overlay ──────────────────────────────────────────────────────────────
 
     private fun showOverlay() {
-        // FIX: prevent WebView from stealing D-pad events while overlay is visible
-        webView?.isFocusable = false
-        webView?.isFocusableInTouchMode = false
-
         overlayLayout?.visibility = View.VISIBLE
         isOverlayVisible = true
-        overlayLayout?.findViewWithTag<TextView>("server_btn_$currentIndex")?.requestFocus()
-        scheduleHide()
+        moveOverlayFocus(currentIndex)
     }
 
     private fun hideOverlay() {
         overlayLayout?.removeCallbacks(hideOverlayRunnable)
         overlayLayout?.visibility = View.GONE
         isOverlayVisible = false
-
-        // Restore WebView focusability
-        webView?.isFocusable = true
-        webView?.isFocusableInTouchMode = true
     }
 
     private fun scheduleHide() {
@@ -729,30 +925,41 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         return when (keyCode) {
+
             KeyEvent.KEYCODE_DPAD_CENTER,
             KeyEvent.KEYCODE_ENTER,
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                if (isOverlayVisible) hideOverlay() else showOverlay()
+                if (isOverlayVisible) {
+                    if (overlayFocusIndex < serverUrls.size) {
+                        switchServer(overlayFocusIndex)
+                    } else {
+                        finish()
+                    }
+                } else {
+                    showOverlay()
+                }
                 true
             }
-            KeyEvent.KEYCODE_BACK -> {
-                // Consumed here; OnBackPressedCallback in onCreate handles the logic exclusively
-                true
-            }
-            KeyEvent.KEYCODE_DPAD_UP,
-            KeyEvent.KEYCODE_DPAD_DOWN,
+
+            KeyEvent.KEYCODE_BACK -> true  // Manejado por OnBackPressedCallback
+
             KeyEvent.KEYCODE_DPAD_LEFT,
             KeyEvent.KEYCODE_DPAD_RIGHT -> {
                 if (!isOverlayVisible) {
                     showOverlay()
                 } else {
-                    // Navigate between overlay buttons, then always consume
-                    // so D-pad NEVER reaches the WebView
-                    super.onKeyDown(keyCode, event)
-                    scheduleHide()
+                    val delta = if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1
+                    moveOverlayFocus(overlayFocusIndex + delta)
                 }
-                true // Always consume D-pad — prevents WebView interference
+                true
             }
+
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                if (!isOverlayVisible) showOverlay() else scheduleHide()
+                true
+            }
+
             else -> super.onKeyDown(keyCode, event)
         }
     }
