@@ -1,0 +1,58 @@
+name: Build and Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > app/futtv-release.keystore
+
+      - name: Build Release APK
+        run: ./gradlew assembleRelease
+        env:
+          KEYSTORE_PATH: futtv-release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Get version name
+        id: version
+        run: |
+          VERSION=$(grep versionName app/build.gradle.kts | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: app/build/outputs/apk/release/app-release.apk
+          name: FutTV v${{ steps.version.outputs.VERSION }}
+          body: Nueva versión de FutTV
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update latest.json
+        run: |
+          VERSION=$(grep versionName app/build.gradle.kts | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          VCODE=$(grep versionCode app/build.gradle.kts | head -1 | sed 's/[^0-9]//g')
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "{\"versionCode\": $VCODE, \"versionName\": \"$VERSION\", \"apkUrl\": \"https://github.com/XxZman/futtv/releases/download/$TAG/app-release.apk\", \"changelog\": \"Nueva versión disponible\"}" > latest.json
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git add latest.json
+          git commit -m "Update latest.json to $VERSION"
+          git push origin HEAD:main
