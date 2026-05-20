@@ -43,7 +43,7 @@ if !errorlevel! equ 0 (
     echo.
 
     :: Actualizar build.gradle.kts con la nueva version
-    powershell -NoProfile -Command "(Get-Content 'app/build.gradle.kts') -replace 'versionCode = \d+','versionCode = !NEWVCODE!' -replace 'versionName = ""[^""]+""','versionName = ""!NEWVERSION!""' | Set-Content 'app/build.gradle.kts'"
+    powershell -NoProfile -Command "(Get-Content 'app/build.gradle.kts') -replace 'versionCode = \d+','versionCode = !NEWVCODE!' -replace 'versionName = ""[0-9.]+""','versionName = ""!NEWVERSION!""' | Set-Content 'app/build.gradle.kts'"
 
     set VERSION=!NEWVERSION!
     set VCODE=!NEWVCODE!
@@ -81,7 +81,7 @@ if !errorlevel! neq 0 (
 
 echo.
 echo  ====================================
-echo   Listo! Compilando v!VERSION!
+echo   Compilando v!VERSION!
 echo   https://github.com/XxZman/futtv/actions
 echo.
 echo   La app ofrecera la actualizacion
