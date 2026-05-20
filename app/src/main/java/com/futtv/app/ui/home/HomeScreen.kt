@@ -2,6 +2,7 @@ package com.futtv.app.ui.home
 
 import android.app.Activity
 import android.content.Intent
+import android.widget.Toast
 import java.util.Calendar
 import java.util.TimeZone
 import androidx.activity.compose.BackHandler
@@ -198,16 +199,34 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
     viewModel: HomeViewModel = viewModel()
 ) {
-    val channelsState   by viewModel.channelsState.collectAsState()
-    val eventsState     by viewModel.eventsState.collectAsState()
-    val selectedChannel by viewModel.selectedChannel.collectAsState()
-    val selectedEvent   by viewModel.selectedEvent.collectAsState()
-    val updateInfo      by viewModel.updateInfo.collectAsState()
-    val updateProgress  by viewModel.updateProgress.collectAsState()
+    val channelsState    by viewModel.channelsState.collectAsState()
+    val eventsState      by viewModel.eventsState.collectAsState()
+    val selectedChannel  by viewModel.selectedChannel.collectAsState()
+    val selectedEvent    by viewModel.selectedEvent.collectAsState()
+    val updateInfo       by viewModel.updateInfo.collectAsState()
+    val updateProgress   by viewModel.updateProgress.collectAsState()
+    val isCheckingUpdate by viewModel.isCheckingUpdate.collectAsState()
+    val upToDate         by viewModel.upToDate.collectAsState()
     val context = LocalContext.current
 
     var showExitDialog   by remember { mutableStateOf(false) }
     var showUpdateDialog by remember { mutableStateOf(false) }
+
+    // Cuando el chequeo manual confirma que no hay actualización → Toast y reset
+    LaunchedEffect(upToDate) {
+        if (upToDate) {
+            Toast.makeText(context, "Ya tenés la última versión \uD83D\uDC4D", Toast.LENGTH_SHORT).show()
+            viewModel.dismissUpToDate()
+        }
+    }
+
+    // Cuando el chequeo manual encuentra una actualización → abrir diálogo automáticamente
+    LaunchedEffect(updateInfo) {
+        if (updateInfo != null && !isCheckingUpdate) {
+            showUpdateDialog = true
+        }
+    }
+
     val firstChannelFocus = remember { FocusRequester() }
     var initialFocusDone  by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
@@ -246,7 +265,9 @@ fun HomeScreen(
                 onRefresh = viewModel::refresh,
                 onDownPressed = {},
                 updateInfo = updateInfo,
-                onUpdateClick = { showUpdateDialog = true }
+                onUpdateClick = { showUpdateDialog = true },
+                isCheckingUpdate = isCheckingUpdate,
+                onCheckUpdate = viewModel::checkForUpdateManually
             )
 
             Column(
@@ -325,7 +346,9 @@ private fun AppHeader(
     onRefresh: () -> Unit,
     onDownPressed: () -> Unit,
     updateInfo: UpdateInfo?,
-    onUpdateClick: () -> Unit
+    onUpdateClick: () -> Unit,
+    isCheckingUpdate: Boolean = false,
+    onCheckUpdate: () -> Unit = {}
 ) {
     Box(
         modifier = Modifier
@@ -357,7 +380,23 @@ private fun AppHeader(
                     Icon(Icons.Filled.SportsSoccer, null, tint = Color.White, modifier = Modifier.size(22.dp))
                 }
                 Spacer(modifier = Modifier.width(12.dp))
-                Text("FutTV", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 32.sp, letterSpacing = (-0.5).sp)
+                val ctx = LocalContext.current
+                val appVersion = remember {
+                    runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "" }.getOrDefault("")
+                }
+                Column(verticalArrangement = Arrangement.Center) {
+                    Text("FutTV", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 32.sp, letterSpacing = (-0.5).sp)
+                    if (appVersion.isNotEmpty()) {
+                        Text(
+                            text = "v$appVersion",
+                            color = TextPrimary.copy(alpha = 0.28f),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium,
+                            letterSpacing = 0.5.sp,
+                            modifier = Modifier.padding(start = 2.dp)
+                        )
+                    }
+                }
             }
 
             // ── Centro: reloj ─────────────────────────────────────────────────
@@ -376,18 +415,23 @@ private fun AppHeader(
                     )
                 }
                 PulsingLiveBadge()
+                // Botón discreto para chequear actualizaciones manualmente
+                UpdateCheckButton(
+                    isChecking = isCheckingUpdate,
+                    onClick = onCheckUpdate
+                )
+                // Botón de refresh de eventos (existente, sin cambios)
                 FocusableCard(
                     onClick = onRefresh,
                     modifier = Modifier.size(40.dp).focusProperties {
                         down = FocusRequester.Default
-                        left = FocusRequester.Cancel
                         up = FocusRequester.Cancel
                         right = FocusRequester.Cancel
                     },
                     cornerRadius = 10.dp
                 ) { focused ->
                     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                        Icon(Icons.Filled.Refresh, "Actualizar", tint = if (focused) FocusBorder else TextSecondary, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Filled.Refresh, "Actualizar eventos", tint = if (focused) FocusBorder else TextSecondary, modifier = Modifier.size(18.dp))
                     }
                 }
             }
@@ -438,6 +482,48 @@ private fun UpdateAvailableBadge(versionName: String, onClick: () -> Unit) {
                 fontSize = 12.sp,
                 fontWeight = FontWeight.ExtraBold
             )
+        }
+    }
+}
+
+// ─── Botón discreto de chequeo manual de actualizaciones ─────────────────────
+
+@Composable
+private fun UpdateCheckButton(isChecking: Boolean, onClick: () -> Unit) {
+    val checkColor = Color(0xFF546E7A)   // gris azulado, discreto
+    FocusableCard(
+        onClick = { if (!isChecking) onClick() },
+        modifier = Modifier
+            .size(40.dp)
+            .focusProperties {
+                down = FocusRequester.Default
+                up = FocusRequester.Cancel
+            },
+        cornerRadius = 10.dp
+    ) { focused ->
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    if (focused) checkColor.copy(alpha = 0.22f) else Color.Transparent,
+                    RoundedCornerShape(10.dp)
+                )
+        ) {
+            if (isChecking) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    color = if (focused) FocusBorder else checkColor,
+                    strokeWidth = 2.dp
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.CloudDownload,
+                    contentDescription = "Buscar actualización",
+                    tint = if (focused) FocusBorder else checkColor,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }
