@@ -7,20 +7,21 @@ echo   FutTV - Publicar nueva version
 echo  ====================================
 echo.
 
-:: Leer versionName desde build.gradle.kts
-powershell -NoProfile -Command "$c=Get-Content 'app/build.gradle.kts' -Raw; if ($c -match 'versionName\s*=\s*""([^""]+)""') { $matches[1] | Out-File '.tmp_ver.txt' -Encoding ASCII -NoNewline }" 2>nul
+:: Leer versionName desde build.gradle.kts usando findstr (sin PowerShell)
+for /f "tokens=2 delims==" %%a in ('findstr /C:"versionName = " app\build.gradle.kts') do set VERRAW=%%a
 
-if not exist .tmp_ver.txt (
+if "%VERRAW%"=="" (
     echo ERROR: No se pudo leer la version desde build.gradle.kts
     pause
     exit /b 1
 )
 
-set /p VERSION=<.tmp_ver.txt
-del .tmp_ver.txt >nul 2>&1
+:: Limpiar comillas y espacios  (ej: " "1.2"" -> 1.2)
+set VERSION=%VERRAW:"=%
+set VERSION=%VERSION: =%
 
 if "%VERSION%"=="" (
-    echo ERROR: Version vacia. Revisa build.gradle.kts
+    echo ERROR: Version vacia. Revisa versionName en build.gradle.kts
     pause
     exit /b 1
 )
