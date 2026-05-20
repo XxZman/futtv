@@ -29,14 +29,20 @@ if "%VERSION%"=="" (
 echo  Version detectada: v%VERSION%
 echo.
 
-:: Verificar si el tag ya existe
+:: Bajar tags del remoto para detectar si ya existe alli tambien
+echo  Verificando tags en GitHub...
+git fetch --tags --quiet >nul 2>&1
+
 git rev-parse "v%VERSION%" >nul 2>&1
 if %errorlevel% equ 0 (
-    echo AVISO: El tag v%VERSION% ya existe.
     echo.
-    echo Para republicar, primero ejecuta:
-    echo   git tag -d v%VERSION%
-    echo   git push origin :refs/tags/v%VERSION%
+    echo  La version v%VERSION% ya fue publicada.
+    echo.
+    echo  Sube el numero en app\build.gradle.kts:
+    echo    versionCode = X       (suma 1)
+    echo    versionName = "X.X"   (nueva version)
+    echo.
+    echo  Luego volvé a abrir este script.
     echo.
     pause
     exit /b 1
