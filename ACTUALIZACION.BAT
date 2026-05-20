@@ -39,10 +39,10 @@ if %errorlevel% equ 0 (
     echo  La version v%VERSION% ya fue publicada.
     echo.
     echo  Sube el numero en app\build.gradle.kts:
-    echo    versionCode = X       (suma 1)
-    echo    versionName = "X.X"   (nueva version)
+    echo    versionCode = X       ^(suma 1^)
+    echo    versionName = "X.X"   ^(nueva version^)
     echo.
-    echo  Luego volvé a abrir este script.
+    echo  Luego vuelve a abrir este script.
     echo.
     pause
     exit /b 1
