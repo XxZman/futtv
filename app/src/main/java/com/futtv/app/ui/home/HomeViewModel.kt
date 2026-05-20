@@ -39,6 +39,14 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _updateProgress = MutableStateFlow<Float?>(null)
     val updateProgress: StateFlow<Float?> = _updateProgress
 
+    // true mientras se ejecuta un chequeo manual de actualizaciones
+    private val _isCheckingUpdate = MutableStateFlow(false)
+    val isCheckingUpdate: StateFlow<Boolean> = _isCheckingUpdate
+
+    // true por un instante cuando el chequeo manual confirma que ya hay la última versión
+    private val _upToDate = MutableStateFlow(false)
+    val upToDate: StateFlow<Boolean> = _upToDate
+
     // Tiempo (ms) del último refresh exitoso de eventos; 0 = nunca
     private var lastEventsRefreshMs = 0L
 
@@ -95,6 +103,24 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             _updateInfo.value = AppUpdater.checkForUpdate(app, app.httpClient)
         }
     }
+
+    /** Chequeo manual disparado por el usuario desde el botón en el header. */
+    fun checkForUpdateManually() {
+        if (_isCheckingUpdate.value) return
+        val app = getApplication<FutTVApp>()
+        viewModelScope.launch {
+            _isCheckingUpdate.value = true
+            val info = AppUpdater.checkForUpdate(app, app.httpClient)
+            _isCheckingUpdate.value = false
+            if (info != null) {
+                _updateInfo.value = info   // el UI observa esto y abre el diálogo
+            } else {
+                _upToDate.value = true     // el UI muestra el mensaje "ya tenés la última versión"
+            }
+        }
+    }
+
+    fun dismissUpToDate() { _upToDate.value = false }
 
     fun downloadAndInstall(context: Context) {
         val info = _updateInfo.value ?: return

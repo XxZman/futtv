@@ -21,6 +21,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLivePlaybackSpeedControl
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -92,10 +93,56 @@ class PlayerActivity : AppCompatActivity() {
     private val WEBVIEW_TIMEOUT_MS = 20_000L
 
     // Watchdog: si ExoPlayer lleva demasiado tiempo en STATE_BUFFERING después de haber
-    // reproducido bien, el stream se cortó → intentar siguiente servidor
-    private val STALL_TIMEOUT_MS = 15_000L
+    // reproducido bien, el stream se cortó → intentar siguiente servidor.
+    // 60 s da tiempo suficiente a que microcortes de red se recuperen solos.
+    private val STALL_TIMEOUT_MS = 60_000L
     private val stallWatchdogRunnable = Runnable {
         tryNextServerAuto()
+    }
+
+    // URL y headers del stream activo en ExoPlayer (para reintentar el mismo servidor)
+    private var currentExoUrl     = ""
+    private var currentExoHeaders = emptyMap<String, String>()
+    // Reintentos sobre el mismo servidor antes de pasar al siguiente
+    private var sameServerRetries = 0
+    private val MAX_SAME_SERVER_RETRIES = 1
+
+    // iframe: soporte para players que requieren ser embebidos en iframe
+    private var iframeRetried = false
+
+    // Detección de video congelado (imagen fija, audio continúa)
+    private var lastRenderedFrames = 0
+    private var frameStallCount    = 0
+    private val FRAME_CHECK_INTERVAL_MS = 5_000L
+    private val FRAME_STALL_MAX_COUNT   = 3   // 15 s sin frames nuevos = video congelado
+    private val videoFreezeCheckRunnable = object : Runnable {
+        override fun run() {
+            val player = exoPlayer ?: return
+            if (!player.isPlaying) return
+            val frames = player.videoDecoderCounters?.renderedOutputBufferCount ?: 0
+            if (frames == lastRenderedFrames && frames > 0) {
+                frameStallCount++
+                android.util.Log.w("FutTV_Player", "Video congelado ($frameStallCount/$FRAME_STALL_MAX_COUNT) frames=$frames")
+                if (frameStallCount >= FRAME_STALL_MAX_COUNT) {
+                    frameStallCount = 0; lastRenderedFrames = 0
+                    runOnUiThread {
+                        showStatus("Video congelado, reconectando...")
+                        if (sameServerRetries < MAX_SAME_SERVER_RETRIES) {
+                            sameServerRetries++
+                            val u = currentExoUrl; val h = currentExoHeaders
+                            rootLayout?.postDelayed({
+                                if (u.isNotBlank()) playWithExoPlayer(u, h) else loadServer(currentIndex)
+                            }, 2_000)
+                        } else { tryNextServerAuto() }
+                    }
+                    return
+                }
+            } else {
+                frameStallCount = 0
+                lastRenderedFrames = frames
+            }
+            rootLayout?.postDelayed(this, FRAME_CHECK_INTERVAL_MS)
+        }
     }
 
     // ─── Lifecycle ────────────────────────────────────────────────────────────
@@ -146,6 +193,7 @@ class PlayerActivity : AppCompatActivity() {
         overlayLayout?.removeCallbacks(hideOverlayRunnable)
         rootLayout?.removeCallbacks(webViewTimeoutRunnable)
         rootLayout?.removeCallbacks(stallWatchdogRunnable)
+        rootLayout?.removeCallbacks(videoFreezeCheckRunnable)
         exoPlayer?.release(); exoPlayer = null
         // FIX: remove WebView from parent BEFORE destroy to avoid "still attached" warning
         webView?.let { wv ->
@@ -246,6 +294,9 @@ class PlayerActivity : AppCompatActivity() {
                     injectStreamUrlScan(view, 0)
                     injectStreamUrlScan(view, 1500)
                     injectStreamUrlScan(view, 3500)
+                    // Detectar mensaje "Use iframe to load this player"
+                    injectIframeDetection(view, 600)
+                    injectIframeDetection(view, 2500)
                 }
 
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -328,6 +379,17 @@ class PlayerActivity : AppCompatActivity() {
                     runOnUiThread { playWithExoPlayer(url, headers) }
                 }
             }, "Android")
+
+            // Bridge para manejar players que piden cargarse dentro de un iframe
+            addJavascriptInterface(object {
+                @android.webkit.JavascriptInterface
+                fun onNeedIframe(originalUrl: String) {
+                    if (iframeRetried || videoStarted) return
+                    iframeRetried = true
+                    android.util.Log.d("FutTV_Player", "iframe requerido: $originalUrl")
+                    runOnUiThread { playAsIframe(originalUrl) }
+                }
+            }, "AndroidIframe")
 
             webChromeClient = object : WebChromeClient() {
                 private var customView: View? = null
@@ -502,6 +564,70 @@ class PlayerActivity : AppCompatActivity() {
         } else {
             view.postDelayed({ view.evaluateJavascript(js, null) }, delayMs)
         }
+    }
+
+    /** Detecta si la página muestra "use iframe" y carga el reproductor en un iframe. */
+    private fun injectIframeDetection(view: WebView, delayMs: Long) {
+        val js = """
+            (function() {
+                if (typeof AndroidIframe === 'undefined') return;
+                var body = document.body;
+                if (!body) return;
+                var text = (body.innerText || body.textContent || '').toLowerCase();
+                // Mensajes típicos cuando el player requiere contexto de iframe
+                var needsIframe = text.includes('use iframe') ||
+                                  text.includes('usa iframe') ||
+                                  text.includes('usar iframe') ||
+                                  text.includes('iframe to load') ||
+                                  text.includes('load in iframe') ||
+                                  text.includes('load this player') ||
+                                  text.includes('cargar en iframe');
+                // Solo actuar si la página es muy simple (solo texto de aviso, sin contenido real)
+                var hasVideo   = document.querySelectorAll('video').length > 0;
+                var hasCanvas  = document.querySelectorAll('canvas').length > 0;
+                if (needsIframe && !hasVideo && !hasCanvas) {
+                    try { AndroidIframe.onNeedIframe(window.location.href); } catch(e) {}
+                }
+            })();
+        """.trimIndent()
+        if (delayMs == 0L) view.evaluateJavascript(js, null)
+        else view.postDelayed({ view.evaluateJavascript(js, null) }, delayMs)
+    }
+
+    /** Recarga la URL embebida dentro de un iframe HTML para satisfacer players que lo requieren. */
+    private fun playAsIframe(url: String) {
+        showLoading(true)
+        showStatus("Cargando en iframe...")
+        val baseUrl = try {
+            val uri = android.net.Uri.parse(url)
+            "${uri.scheme ?: "https"}://${uri.host ?: ""}"
+        } catch (e: Exception) { "https://streamhdx.com" }
+
+        val safeUrl = url.replace("\"", "&quot;")
+        val html = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{margin:0;padding:0;border:0;overflow:hidden}
+html,body{width:100%;height:100%;background:#000;display:block}
+iframe{position:fixed;top:0;left:0;width:100%;height:100%;border:none}
+</style>
+</head>
+<body>
+<iframe src="$safeUrl"
+  allowfullscreen
+  allow="autoplay;encrypted-media;picture-in-picture;fullscreen"
+  scrolling="no"
+  frameborder="0">
+</iframe>
+</body>
+</html>"""
+        // Reset timeout para que el iframe tenga su propio tiempo de carga
+        rootLayout?.removeCallbacks(webViewTimeoutRunnable)
+        rootLayout?.postDelayed(webViewTimeoutRunnable, WEBVIEW_TIMEOUT_MS)
+        webView?.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null)
     }
 
     private fun buildErrorLayout(): LinearLayout {
@@ -730,6 +856,7 @@ class PlayerActivity : AppCompatActivity() {
         val url = serverUrls.getOrElse(index) { "" }
         if (url.isBlank()) { tryNextServerAuto(); return }
 
+        sameServerRetries = 0
         hideError()
         val label = serverLabels.getOrElse(index) { "Servidor ${index + 1}" }
         val total = serverUrls.size
@@ -775,60 +902,111 @@ class PlayerActivity : AppCompatActivity() {
         webView?.visibility = View.GONE
         exoPlayerView?.visibility = View.VISIBLE
         exoWasPlaying = false
+        currentExoUrl     = url
+        currentExoHeaders = headers
         showLoading(true)
 
         exoPlayer?.release()
+        // Resetear contadores del detector de freeze para la nueva sesión de reproducción
+        rootLayout?.removeCallbacks(videoFreezeCheckRunnable)
+        lastRenderedFrames = 0
+        frameStallCount    = 0
 
-        // Buffer generoso para streams HLS en vivo: prebuffer rápido, aguanta picos de red
+        // ── Buffer: más margen mínimo evita el freeze periódico en HLS live ─────
+        // minBuffer 30 s: ExoPlayer siempre mantiene 30 s de segmentos adelante,
+        // así el refresh del playlist no deja nunca un gap vacío.
+        // bufferForPlaybackAfterRebufferMs 5 s: tras un corte, espera 5 s de datos
+        // antes de reanudar (evita micro-freezes inmediatos por volver demasiado pronto).
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs             */ 15_000,
-                /* maxBufferMs             */ 60_000,
-                /* bufferForPlaybackMs     */  2_000,
-                /* bufferForPlaybackAfterRebufferMs */ 5_000
+                /* minBufferMs                      */ 30_000,
+                /* maxBufferMs                      */ 90_000,
+                /* bufferForPlaybackMs              */  2_000,
+                /* bufferForPlaybackAfterRebufferMs */  5_000
             )
             .build()
 
-        val playerBuilder = if (headers.isNotEmpty()) {
-            val dataSourceFactory = DefaultHttpDataSource.Factory()
-                .setDefaultRequestProperties(headers)
-            ExoPlayer.Builder(this)
-                .setLoadControl(loadControl)
-                .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
-        } else {
-            ExoPlayer.Builder(this)
-                .setLoadControl(loadControl)
+        // ── Live speed control: velocidad fija 1.0× ──────────────────────────
+        // Por defecto ExoPlayer acelera a 1.02–1.10× para «ponerse al día» con el
+        // live edge después de un buffering. Esa aceleración/desaceleración causa
+        // micro-stutters visibles cada vez que el player reajusta.
+        // Con min/max = 1.0 el video siempre corre a velocidad normal.
+        val liveSpeedControl = DefaultLivePlaybackSpeedControl.Builder()
+            .setFallbackMinPlaybackSpeed(1.0f)
+            .setFallbackMaxPlaybackSpeed(1.0f)
+            .build()
+
+        val dataSourceFactory = DefaultHttpDataSource.Factory().apply {
+            setConnectTimeoutMs(15_000)
+            setReadTimeoutMs(20_000)
+            if (headers.isNotEmpty()) setDefaultRequestProperties(headers)
         }
+
+        val playerBuilder = ExoPlayer.Builder(this)
+            .setLoadControl(loadControl)
+            .setLivePlaybackSpeedControl(liveSpeedControl)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+
+        // ── MediaItem con configuración live para HLS ─────────────────────────
+        // targetOffsetMs 10 s: reproducir 10 s por detrás del live edge.
+        // Esto garantiza que siempre haya varios segmentos HLS disponibles en el
+        // playlist antes de que el player los necesite, eliminando el gap que
+        // produce el freeze periódico.
+        // Velocidad min/max = 1.0 también a nivel de MediaItem (doble seguro).
+        val mediaItem = if (url.contains(".m3u8", ignoreCase = true)) {
+            MediaItem.Builder()
+                .setUri(url)
+                .setLiveConfiguration(
+                    MediaItem.LiveConfiguration.Builder()
+                        .setTargetOffsetMs(10_000)
+                        .setMinOffsetMs(5_000)
+                        .setMaxOffsetMs(30_000)
+                        .setMinPlaybackSpeed(1.0f)
+                        .setMaxPlaybackSpeed(1.0f)
+                        .build()
+                )
+                .build()
+        } else {
+            MediaItem.fromUri(url)
+        }
+
         exoPlayer = playerBuilder.build().also { player ->
             exoPlayerView?.player = player
-            player.setMediaItem(MediaItem.fromUri(url))
+            player.setMediaItem(mediaItem)
             player.prepare()
-            player.trackSelectionParameters = player.trackSelectionParameters
-                .buildUpon()
-                .setForceHighestSupportedBitrate(true)
-                .build()
+            // Sin forceHighestSupportedBitrate: ExoPlayer elige calidad de forma adaptativa
+            // según el ancho de banda disponible, igual que hace el reproductor web.
             player.playWhenReady = true
             player.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(state: Int) {
                     when (state) {
                         Player.STATE_READY -> {
                             exoWasPlaying = true
+                            sameServerRetries = 0
                             showLoading(false)
                             hideStatus()
-                            // Stream recuperado: cancelar watchdog
+                            // Stream recuperado: cancelar stall watchdog
                             rootLayout?.removeCallbacks(stallWatchdogRunnable)
+                            // Iniciar detector de video congelado (frames detenidos con audio activo)
+                            rootLayout?.removeCallbacks(videoFreezeCheckRunnable)
+                            lastRenderedFrames = 0
+                            frameStallCount    = 0
+                            rootLayout?.postDelayed(videoFreezeCheckRunnable, FRAME_CHECK_INTERVAL_MS)
                         }
                         Player.STATE_BUFFERING -> {
                             showLoading(true)
+                            // Pausar detector de freeze mientras hay buffering normal
+                            rootLayout?.removeCallbacks(videoFreezeCheckRunnable)
                             if (exoWasPlaying) {
                                 // Stream se congeló durante la reproducción — iniciar watchdog.
-                                // Si no se recupera en STALL_TIMEOUT_MS, cambia de servidor.
+                                // Solo cambia de servidor si no se recupera en STALL_TIMEOUT_MS (60 s).
                                 rootLayout?.removeCallbacks(stallWatchdogRunnable)
                                 rootLayout?.postDelayed(stallWatchdogRunnable, STALL_TIMEOUT_MS)
                             }
                         }
                         Player.STATE_ENDED -> {
                             rootLayout?.removeCallbacks(stallWatchdogRunnable)
+                            rootLayout?.removeCallbacks(videoFreezeCheckRunnable)
                             showLoading(false)
                         }
                         else -> {}
@@ -837,8 +1015,24 @@ class PlayerActivity : AppCompatActivity() {
                 override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                     showLoading(false)
                     rootLayout?.removeCallbacks(stallWatchdogRunnable)
-                    // Siempre cambiar de servidor en error: si estaba reproduciendo era un corte real
-                    runOnUiThread { tryNextServerAuto() }
+                    rootLayout?.removeCallbacks(videoFreezeCheckRunnable)
+                    // Si ya estaba reproduciendo y no superamos el límite de reintentos,
+                    // reintentamos el mismo servidor (los errores de segmento HLS son transitorios).
+                    if (exoWasPlaying && sameServerRetries < MAX_SAME_SERVER_RETRIES) {
+                        sameServerRetries++
+                        val retryUrl     = currentExoUrl
+                        val retryHeaders = currentExoHeaders
+                        runOnUiThread {
+                            showStatus("Reconectando...")
+                            rootLayout?.postDelayed({
+                                if (retryUrl.isNotBlank()) playWithExoPlayer(retryUrl, retryHeaders)
+                                else loadServer(currentIndex)
+                            }, 3_000)
+                        }
+                    } else {
+                        sameServerRetries = 0
+                        runOnUiThread { tryNextServerAuto() }
+                    }
                 }
             })
         }
@@ -851,8 +1045,10 @@ class PlayerActivity : AppCompatActivity() {
         webView?.visibility = View.VISIBLE
 
         // Reset detection state and start timeout
-        videoStarted = false
+        videoStarted  = false
+        iframeRetried = false
         rootLayout?.removeCallbacks(webViewTimeoutRunnable)
+        rootLayout?.removeCallbacks(videoFreezeCheckRunnable)
         rootLayout?.postDelayed(webViewTimeoutRunnable, WEBVIEW_TIMEOUT_MS)
         showLoading(true)
 
