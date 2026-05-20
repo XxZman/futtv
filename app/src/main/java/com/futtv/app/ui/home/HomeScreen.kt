@@ -350,6 +350,10 @@ private fun AppHeader(
     isCheckingUpdate: Boolean = false,
     onCheckUpdate: () -> Unit = {}
 ) {
+    val appCtx = LocalContext.current
+    val appVersion = remember {
+        runCatching { appCtx.packageManager.getPackageInfo(appCtx.packageName, 0).versionName ?: "" }.getOrDefault("")
+    }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -380,10 +384,6 @@ private fun AppHeader(
                     Icon(Icons.Filled.SportsSoccer, null, tint = Color.White, modifier = Modifier.size(22.dp))
                 }
                 Spacer(modifier = Modifier.width(12.dp))
-                val ctx = LocalContext.current
-                val appVersion = remember {
-                    runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "" }.getOrDefault("")
-                }
                 Column(verticalArrangement = Arrangement.Center) {
                     Text("FutTV", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 32.sp, letterSpacing = (-0.5).sp)
                     if (appVersion.isNotEmpty()) {
