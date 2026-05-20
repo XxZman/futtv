@@ -78,7 +78,7 @@ if !errorlevel! neq 0 (
 )
 
 :: Sincronizar con remoto antes de pushear
-git pull --rebase origin main >nul 2>&1
+git pull --rebase --autostash origin main >nul 2>&1
 
 :: Push main
 echo  Pusheando main...
