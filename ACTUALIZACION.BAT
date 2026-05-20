@@ -39,7 +39,15 @@ if !errorlevel! equ 0 (
     set /a NEWVMINOR=!VMINOR!+1
     set NEWVERSION=!VMAJOR!.!NEWVMINOR!
     echo  v!VERSION! ya publicada -^> subiendo a v!NEWVERSION!
-    powershell -NoProfile -Command "(Get-Content 'app/build.gradle.kts') -replace 'versionCode = \d+','versionCode = !NEWVCODE!' -replace 'versionName = ""[0-9.]+""','versionName = ""!NEWVERSION!""' | Set-Content 'app/build.gradle.kts'"
+
+    :: Escribir script PS a archivo temporal para evitar problemas de escaping
+    echo $c = Get-Content 'app/build.gradle.kts' > .tmp_ver.ps1
+    echo $c = $c -replace 'versionCode = \d+', 'versionCode = !NEWVCODE!' >> .tmp_ver.ps1
+    echo $c = $c -replace 'versionName = "[0-9.]+"', 'versionName = "!NEWVERSION!"' >> .tmp_ver.ps1
+    echo [System.IO.File]::WriteAllLines('app/build.gradle.kts', $c, [System.Text.UTF8Encoding]::new($false)) >> .tmp_ver.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File .tmp_ver.ps1
+    del .tmp_ver.ps1 >nul 2>&1
+
     set VERSION=!NEWVERSION!
     set VCODE=!NEWVCODE!
     goto checkloop
